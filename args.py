@@ -5,6 +5,8 @@ def get_train_test_args():
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--num-epochs', type=int, default=3)
     parser.add_argument('--lr', type=float, default=3e-5)
+    # https://arxiv.org/pdf/1910.09342.pdf
+    parser.add_argument('--discriminator-lambda', type=float, default=1e-2)
     parser.add_argument('--num-visuals', type=int, default=10)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--save-dir', type=str, default='save/')
@@ -22,5 +24,6 @@ def get_train_test_args():
     parser.add_argument('--sub-file', type=str, default='')
     parser.add_argument('--visualize-predictions', action='store_true')
     parser.add_argument('--eval-every', type=int, default=5000)
+    parser.add_argument('--enable-discriminator', action='store_true')
     args = parser.parse_args()
     return args

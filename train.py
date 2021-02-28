@@ -5,12 +5,13 @@ from collections import OrderedDict
 import torch
 import csv
 import util
+from discriminator import DomainDiscriminator
 from transformers import DistilBertTokenizerFast
 from transformers import DistilBertForQuestionAnswering
 from transformers import AdamW
 from tensorboardX import SummaryWriter
 
-
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import RandomSampler, SequentialSampler
 from args import get_train_test_args
@@ -145,6 +146,9 @@ class Trainer():
         self.save_dir = args.save_dir
         self.log = log
         self.visualize_predictions = args.visualize_predictions
+        self.enable_discriminator = args.enable_discriminator
+        self.discriminator = DomainDiscriminator()
+        self.discriminator_lambda = args.discriminator_lambda
         if not os.path.exists(self.path):
             os.makedirs(self.path)
 
@@ -192,9 +196,26 @@ class Trainer():
             return preds, results
         return results
 
+    def compute_discriminator_loss(self, hidden_states):
+        """
+        Computes the loss for discriminator based on the hidden states of the DistillBERT model.
+        Original paper implementation: https://github.com/seanie12/mrqa/blob/master/model.py
+        https://huggingface.co/transformers/_modules/transformers/models/distilbert/modeling_distilbert.html#DistilBertForQuestionAnswering
+        Input: last layer hidden states of the distillBERT model, with shape [batch_size, sequence_length, hidden_dim]
+
+        :return: loss from discriminator.
+        """
+        device = self.device
+        cls_embedding = hidden_states[:, 0]
+        log_prob = self.discriminator(cls_embedding)
+        targets = torch.ones_like(log_prob) * (1 / self.discriminator.num_classes)
+        kl_criterion = nn.KLDivLoss(reduction="batchmean")
+        return kl_criterion(log_prob, targets)
+
     def train(self, model, train_dataloader, eval_dataloader, val_dict):
         device = self.device
         model.to(device)
+        self.discriminator.to(device)
         optim = AdamW(model.parameters(), lr=self.lr)
         global_idx = 0
         best_scores = {'F1': -1.0, 'EM': -1.0}
@@ -211,9 +232,20 @@ class Trainer():
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
                     outputs = model(input_ids, attention_mask=attention_mask,
+                                    output_attentions=True,
+                                    output_hidden_states=True,
                                     start_positions=start_positions,
-                                    end_positions=end_positions)
+                                    end_positions=end_positions,
+                                    )
                     loss = outputs[0]
+                    if self.enable_discriminator:
+                        # hidden_states[0] shape: [16, 384, 768]
+                        # [batch_size, sequence_length, hidden_size]
+                        hidden_states = outputs.hidden_states
+                        discriminator_loss = self.discriminator_lambda * self.compute_discriminator_loss(hidden_states[0])
+                        print(discriminator_loss)
+                        loss += discriminator_loss
+
                     loss.backward()
                     optim.step()
                     progress_bar.update(len(input_ids))
