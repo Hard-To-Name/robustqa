@@ -177,7 +177,7 @@ class QADataset(Dataset):
         self.encodings = encodings
         self.keys = ['input_ids', 'attention_mask']
         if train:
-            self.keys += ['start_positions', 'end_positions']
+            self.keys += ['start_positions', 'end_positions', 'data_set_id']
         assert(all(key in self.encodings for key in self.keys))
 
     def __getitem__(self, idx):
@@ -186,11 +186,24 @@ class QADataset(Dataset):
     def __len__(self):
         return len(self.encodings['input_ids'])
 
-def read_squad(path):
+def build_dataset_to_idx_map():
+    return {
+        'squad': 0,
+        'nat_questions': 1,
+        'newsqa': 2,
+        'duorc': 3,
+        'race': 4,
+        'relation_extraction': 5
+    }
+
+def read_squad(path, include_dataset_labels = True):
+    data_name = path.split('/')[-1] # squad, nat_questions, news_qa
+    data_set_id = build_dataset_to_idx_map()[data_name]
     path = Path(path)
     with open(path, 'rb') as f:
         squad_dict = json.load(f)
     data_dict = {'question': [], 'context': [], 'id': [], 'answer': []}
+
     for group in squad_dict['data']:
         for passage in group['paragraphs']:
             context = passage['context']
@@ -201,7 +214,7 @@ def read_squad(path):
                     data_dict['context'].append(context)
                     data_dict['id'].append(qa['id'])
                 else:
-                    for answer in  qa['answers']:
+                    for answer in qa['answers']:
                         data_dict['question'].append(question)
                         data_dict['context'].append(context)
                         data_dict['id'].append(qa['id'])
@@ -211,6 +224,8 @@ def read_squad(path):
         id_map[qid].append(idx)
 
     data_dict_collapsed = {'question': [], 'context': [], 'id': []}
+    if include_dataset_labels:
+        data_dict_collapsed['data_set_id'] = []
     if data_dict['answer']:
         data_dict_collapsed['answer'] = []
     for qid in id_map:
@@ -218,6 +233,9 @@ def read_squad(path):
         data_dict_collapsed['question'].append(data_dict['question'][ex_ids[0]])
         data_dict_collapsed['context'].append(data_dict['context'][ex_ids[0]])
         data_dict_collapsed['id'].append(qid)
+        if include_dataset_labels:
+            data_dict_collapsed['data_set_id'].append(data_set_id)
+
         if data_dict['answer']:
             all_answers = [data_dict['answer'][idx] for idx in ex_ids]
             data_dict_collapsed['answer'].append({'answer_start': [answer['answer_start'] for answer in all_answers],
