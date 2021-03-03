@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class DomainDiscriminator(nn.Module):
-    def __init__(self, num_classes=3, input_size=768 * 1,
+    def __init__(self, num_classes=6, input_size=768 * 1,
                  hidden_size=768, num_layers=3, dropout=0.1):
         super(DomainDiscriminator, self).__init__()
         self.num_layers = num_layers

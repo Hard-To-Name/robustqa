@@ -137,6 +137,7 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
 class Trainer():
   def __init__(self, args, log):
     self.lr = args.lr
+    self.discriminator_lr = args.discriminator_lr
     self.num_epochs = args.num_epochs
     self.device = args.device
     self.eval_every = args.eval_every
@@ -207,12 +208,15 @@ class Trainer():
     cls_embedding = hidden_states[:, 0]
     log_prob = self.discriminator(cls_embedding)
     targets = torch.ones_like(log_prob) * (1 / self.discriminator.num_classes)
+    # print('discriminator loss : ', log_prob, targets)
     kl_criterion = nn.KLDivLoss(reduction="batchmean")
     return kl_criterion(log_prob, targets)
 
   def forward_discriminator(self, hidden_states, data_set_ids):
     cls_embedding = hidden_states[:, 0]
+    # detach the embedding making sure it's not updated from discriminator
     log_prob = self.discriminator(cls_embedding.detach())
+    # print('forward discriminator : ', log_prob, data_set_ids)
     criterion = nn.NLLLoss()
     loss = criterion(log_prob, data_set_ids)
 
@@ -223,7 +227,7 @@ class Trainer():
     model.to(device)
     self.discriminator.to(device)
     qa_optim = AdamW(model.parameters(), lr=self.lr)
-    dis_optim = AdamW(self.discriminator.parameters(), lr=self.lr)
+    dis_optim = AdamW(self.discriminator.parameters(), lr=self.discriminator_lr)
 
     global_idx = 0
     best_scores = {'F1': -1.0, 'EM': -1.0}
@@ -249,25 +253,29 @@ class Trainer():
                           )
           loss = outputs[0]
           if self.enable_discriminator:
-            # hidden_states[0] shape: [16, 384, 768]
+            # hidden_states shape: [16, 384, 768]
             # [batch_size, sequence_length, hidden_size]
-            hidden_states = outputs.hidden_states
-            discriminator_loss_for_qa = self.discriminator_lambda * self.compute_discriminator_loss(hidden_states[0])
+            hidden_states = outputs.hidden_states[-1]
+            discriminator_loss_for_qa = self.discriminator_lambda * self.compute_discriminator_loss(hidden_states)
             loss += discriminator_loss_for_qa
+
+            # step the qa_optim first
+            loss.backward()
+            qa_optim.step()
             # print('dis loss on qa : ', discriminator_loss_for_qa)
 
-            discriminator_loss = self.forward_discriminator(hidden_states[0], data_set_ids)
+            discriminator_loss = self.forward_discriminator(hidden_states, data_set_ids)
             # print('dis loss on dis : ', discriminator_loss)
             discriminator_loss.backward()
             dis_optim.step()
-
-          loss.backward()
-          qa_optim.step()
+          else:
+            loss.backward()
+            qa_optim.step()
           progress_bar.update(len(input_ids))
           progress_bar.set_postfix(epoch=epoch_num, NLL=loss.item(), dis_loss=discriminator_loss.item())
           tbx.add_scalar('train/NLL', loss.item(), global_idx)
           tbx.add_scalar('train/dis_loss', discriminator_loss.item(), global_idx)
-          if (global_idx % self.eval_every) == 0:
+          if (global_idx % self.eval_every) == 0 and global_idx > 0:
             self.log.info(f'Evaluating at step {global_idx}...')
             preds, curr_score = self.evaluate(model, eval_dataloader, val_dict, return_preds=True)
             results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
@@ -310,7 +318,12 @@ def main():
   if args.do_train:
     if not os.path.exists(args.save_dir):
       os.makedirs(args.save_dir)
-    args.save_dir = util.get_save_dir(args.save_dir, args.run_name)
+    if args.resume_training:
+      checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
+      model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+      model.to(args.device)
+    else:
+      args.save_dir = util.get_save_dir(args.save_dir, args.run_name)
     log = util.get_logger(args.save_dir, 'log_train')
     log.info(f'Args: {json.dumps(vars(args), indent=4, sort_keys=True)}')
     log.info("Preparing Training Data...")
