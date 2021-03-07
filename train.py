@@ -240,6 +240,7 @@ class Trainer():
           qa_optim.zero_grad()
           dis_optim.zero_grad()
           model.train()
+          self.discriminator.train()
           input_ids = batch['input_ids'].to(device)
           attention_mask = batch['attention_mask'].to(device)
           start_positions = batch['start_positions'].to(device)
