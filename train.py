@@ -137,7 +137,7 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
 class Trainer():
   def __init__(self, args, log):
     self.lr = args.lr
-    self.discriminator_lr = args.discriminator_lr
+    self.discriminator_lr = args.adv_lr
     self.num_epochs = args.num_epochs
     self.device = args.device
     self.eval_every = args.eval_every
@@ -146,9 +146,9 @@ class Trainer():
     self.save_dir = args.save_dir
     self.log = log
     self.visualize_predictions = args.visualize_predictions
-    self.enable_discriminator = args.enable_discriminator
+    self.enable_discriminator = args.adv
     self.discriminator = DomainDiscriminator()
-    self.discriminator_lambda = args.discriminator_lambda
+    self.discriminator_lambda = args.adv_lambda
     if not os.path.exists(self.path):
       os.makedirs(self.path)
 
@@ -202,7 +202,6 @@ class Trainer():
     Original paper implementation: https://github.com/seanie12/mrqa/blob/master/model.py
     https://huggingface.co/transformers/_modules/transformers/models/distilbert/modeling_distilbert.html#DistilBertForQuestionAnswering
     Input: last layer hidden states of the distillBERT model, with shape [batch_size, sequence_length, hidden_dim]
-
     :return: loss from discriminator.
     """
     cls_embedding = hidden_states[:, 0]
@@ -240,6 +239,7 @@ class Trainer():
           qa_optim.zero_grad()
           dis_optim.zero_grad()
           model.train()
+          self.discriminator.train()
           input_ids = batch['input_ids'].to(device)
           attention_mask = batch['attention_mask'].to(device)
           start_positions = batch['start_positions'].to(device)
