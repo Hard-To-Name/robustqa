@@ -5,6 +5,7 @@ import logging
 import pickle
 import string
 import re
+import math
 from pathlib import Path
 from collections import Counter, OrderedDict, defaultdict as ddict
 import torch
@@ -482,3 +483,9 @@ def compute_f1(a_gold, a_pred):
     recall = 1.0 * num_same / len(gold_toks)
     f1 = (2 * precision * recall) / (precision + recall)
     return f1
+
+def kl_coef(i):
+    # coef for KL annealing
+    # reaches 1 at i = 22000
+    # https://github.com/kefirski/pytorch_RVAE/blob/master/utils/functional.py
+    return (math.tanh((i - 3500) / 1000) + 1) / 2
