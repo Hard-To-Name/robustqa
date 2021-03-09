@@ -30,7 +30,6 @@ def save_pickle(obj, path):
 
 def visualize(tbx, pred_dict, gold_dict, step, split, num_visuals):
     """Visualize text examples to TensorBoard.
-
     Args:
         tbx (tensorboardX.SummaryWriter): Summary writer.
         pred_dict (dict): dict of predictions of the form id -> pred.
@@ -94,17 +93,14 @@ def merge(encodings, new_encoding):
 def get_logger(log_dir, name):
     """Get a `logging.Logger` instance that prints to the console
     and an auxiliary file.
-
     Args:
         log_dir (str): Directory in which to create the log file.
         name (str): Name to identify the logs.
-
     Returns:
         logger (logging.Logger): Logger instance for logging events.
     """
     class StreamHandlerWithTQDM(logging.Handler):
         """Let `logging` print without breaking `tqdm` progress bars.
-
         See Also:
             > https://stackoverflow.com/questions/38543506
         """
@@ -147,7 +143,6 @@ def get_logger(log_dir, name):
 
 class AverageMeter:
     """Keep track of average values over time.
-
     Adapted from:
         > https://github.com/pytorch/examples/blob/master/imagenet/main.py
     """
@@ -162,7 +157,6 @@ class AverageMeter:
 
     def update(self, val, num_samples=1):
         """Update meter with new value `val`, the average of `num` samples.
-
         Args:
             val (float): Average value to update the meter with.
             num_samples (int): Number of samples that were averaged to
@@ -175,9 +169,9 @@ class AverageMeter:
 class QADataset(Dataset):
     def __init__(self, encodings, train=True):
         self.encodings = encodings
-        self.keys = ['input_ids', 'attention_mask']
+        self.keys = ['input_ids', 'attention_mask', 'data_set_id']
         if train:
-            self.keys += ['start_positions', 'end_positions', 'data_set_id']
+            self.keys += ['start_positions', 'end_positions']
         assert(all(key in self.encodings for key in self.keys))
 
     def __getitem__(self, idx):
@@ -277,7 +271,6 @@ def add_end_idx(answers, contexts):
 
 def convert_tokens(eval_dict, qa_id, y_start_list, y_end_list):
     """Convert predictions to tokens from the context.
-
     Args:
         eval_dict (dict): Dictionary with eval info for the dataset. This is
             used to perform the mapping from IDs and indices to actual text.
@@ -285,7 +278,6 @@ def convert_tokens(eval_dict, qa_id, y_start_list, y_end_list):
         y_start_list (list): List of start predictions.
         y_end_list (list): List of end predictions.
         no_answer (bool): Questions can have no answer. E.g., SQuAD 2.0.
-
     Returns:
         pred_dict (dict): Dictionary index IDs -> predicted answer text.
         sub_dict (dict): Dictionary UUIDs -> predicted answer text (submission).
@@ -326,6 +318,24 @@ def eval_dicts(gold_dict, pred_dict):
     eval_dict = {'EM': 100. * em / total,
                  'F1': 100. * f1 / total}
     return eval_dict
+
+def eval_discriminator(gold_dict, dis_logits):
+    try:
+        predict_correct = 0
+        total = 0
+        curr_id = 0
+        for dis_logit in dis_logits:
+            total += 1
+            index = np.argmax(dis_logit)
+            ground_truth = gold_dict['data_set_id'][curr_id]
+            curr_id += 1
+            if index == ground_truth:
+                predict_correct += 1
+        eval_dict = {'precision': 100. * predict_correct / total}
+    except:
+        return {'precision': 0}
+    return eval_dict
+
 
 def postprocess_qa_predictions(examples, features, predictions,
                                n_best_size=20, max_answer_length=30):

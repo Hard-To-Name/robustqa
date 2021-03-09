@@ -34,12 +34,14 @@ def prepare_eval_data(dataset_dict, tokenizer):
   # For evaluation, we will need to convert our predictions to substrings of the context, so we keep the
   # corresponding example_id and we will store the offset mappings.
   tokenized_examples["id"] = []
+  tokenized_examples["data_set_id"] = []
   for i in tqdm(range(len(tokenized_examples["input_ids"]))):
     # Grab the sequence corresponding to that example (to know what is the context and what is the question).
     sequence_ids = tokenized_examples.sequence_ids(i)
     # One example can give several spans, this is the index of the example containing this span of text.
     sample_index = sample_mapping[i]
     tokenized_examples["id"].append(dataset_dict["id"][sample_index])
+    tokenized_examples["data_set_id"].append(dataset_dict["data_set_id"][sample_index])
     # Set to None the offset_mapping that are not part of the context so it's easy to determine if a token
     # position is part of the context or not.
     tokenized_examples["offset_mapping"][i] = [
@@ -154,43 +156,55 @@ class Trainer():
 
   def save(self, model):
     model.save_pretrained(self.path)
+    torch.save(self.discriminator.state_dict(), self.path + '/discriminator')
 
-  def evaluate(self, model, data_loader, data_dict, return_preds=False, split='validation'):
+  def evaluate(self, model, discriminator, data_loader, data_dict, return_preds=False, split='validation'):
     device = self.device
 
     model.eval()
     pred_dict = {}
     all_start_logits = []
     all_end_logits = []
+    all_dis_logits = []
     with torch.no_grad(), \
       tqdm(total=len(data_loader.dataset)) as progress_bar:
       for batch in data_loader:
         # Setup for forward
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
+        data_set_ids = batch['data_set_id'].to(device)
         batch_size = len(input_ids)
-        outputs = model(input_ids, attention_mask=attention_mask)
+        outputs = model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
         # Forward
         start_logits, end_logits = outputs.start_logits, outputs.end_logits
+        hidden_states = outputs.hidden_states[-1]
+        _, dis_logits = self.forward_discriminator(hidden_states, data_set_ids)
+
         # TODO: compute loss
 
         all_start_logits.append(start_logits)
         all_end_logits.append(end_logits)
+        all_dis_logits.append(dis_logits)
         progress_bar.update(batch_size)
 
     # Get F1 and EM scores
     start_logits = torch.cat(all_start_logits).cpu().numpy()
     end_logits = torch.cat(all_end_logits).cpu().numpy()
+    dis_logits = torch.cat(all_dis_logits).cpu().numpy()
     preds = util.postprocess_qa_predictions(data_dict,
                                             data_loader.dataset.encodings,
                                             (start_logits, end_logits))
+
     if split == 'validation':
+      discriminator_eval_results = util.eval_discriminator(data_dict, dis_logits)
       results = util.eval_dicts(data_dict, preds)
       results_list = [('F1', results['F1']),
-                      ('EM', results['EM'])]
+                      ('EM', results['EM']),
+                      ('discriminator_precision', discriminator_eval_results['precision'])]
     else:
       results_list = [('F1', -1.0),
-                      ('EM', -1.0)]
+                      ('EM', -1.0),
+                      ('discriminator_precision', -1.0)]
     results = OrderedDict(results_list)
     if return_preds:
       return preds, results
@@ -219,7 +233,7 @@ class Trainer():
     criterion = nn.NLLLoss()
     loss = criterion(log_prob, data_set_ids)
 
-    return loss
+    return loss, log_prob
 
   def train(self, model, train_dataloader, eval_dataloader, val_dict):
     device = self.device
@@ -264,7 +278,7 @@ class Trainer():
             qa_optim.step()
             # print('dis loss on qa : ', discriminator_loss_for_qa)
 
-            discriminator_loss = self.forward_discriminator(hidden_states, data_set_ids)
+            discriminator_loss, _ = self.forward_discriminator(hidden_states, data_set_ids)
             # print('dis loss on dis : ', discriminator_loss)
             discriminator_loss.backward()
             dis_optim.step()
@@ -276,8 +290,10 @@ class Trainer():
           tbx.add_scalar('train/NLL', loss.item(), global_idx)
           tbx.add_scalar('train/dis_loss', discriminator_loss.item(), global_idx)
           if (global_idx % self.eval_every) == 0 and global_idx > 0:
+          # TODO(lizhe): change this back
+          # if (global_idx % self.eval_every) == 0:
             self.log.info(f'Evaluating at step {global_idx}...')
-            preds, curr_score = self.evaluate(model, eval_dataloader, val_dict, return_preds=True)
+            preds, curr_score = self.evaluate(model, self.discriminator, eval_dataloader, val_dict, return_preds=True)
             results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
             self.log.info('Visualizing in TensorBoard...')
             for k, v in curr_score.items():
@@ -346,12 +362,15 @@ def main():
     trainer = Trainer(args, log)
     checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
     model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+    discriminator = DomainDiscriminator()
+    discriminator.load_state_dict(torch.load(checkpoint_path + '/discriminator'))
     model.to(args.device)
+    discriminator.to(args.device)
     eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
     eval_loader = DataLoader(eval_dataset,
                              batch_size=args.batch_size,
                              sampler=SequentialSampler(eval_dataset))
-    eval_preds, eval_scores = trainer.evaluate(model, eval_loader,
+    eval_preds, eval_scores = trainer.evaluate(model, discriminator, eval_loader,
                                                eval_dict, return_preds=True,
                                                split=split_name)
     results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in eval_scores.items())
