@@ -149,8 +149,13 @@ class Trainer():
     self.log = log
     self.visualize_predictions = args.visualize_predictions
     self.enable_discriminator = args.adv
-    self.discriminator = DomainDiscriminator()
+    discriminator_input_size = 768
+    if args.full_adv:
+      discriminator_input_size = 384 * 768
+    self.discriminator = DomainDiscriminator(input_size=discriminator_input_size)
     self.discriminator_lambda = args.adv_lambda
+    self.num_adv_steps = args.adv_steps
+    self.full_adv = args.full_adv
     if not os.path.exists(self.path):
       os.makedirs(self.path)
 
@@ -228,10 +233,13 @@ class Trainer():
     kl_criterion = nn.KLDivLoss(reduction="batchmean")
     return kl_criterion(log_prob, targets)
 
-  def forward_discriminator(self, discriminator, hidden_states, data_set_ids):
-    cls_embedding = hidden_states[:, 0]
+  def forward_discriminator(self, discriminator, hidden_states, data_set_ids, full_adv):
+    if full_adv:
+      embedding = torch.flatten(hidden_states)
+    else:
+      embedding = hidden_states[:, 0]
     # detach the embedding making sure it's not updated from discriminator
-    log_prob = discriminator(cls_embedding.detach())
+    log_prob = discriminator(embedding.detach())
     # print('forward discriminator : ', log_prob, data_set_ids)
     criterion = nn.NLLLoss()
     loss = criterion(log_prob, data_set_ids)
@@ -280,11 +288,11 @@ class Trainer():
             loss.backward()
             qa_optim.step()
             # print('dis loss on qa : ', discriminator_loss_for_qa)
-
-            discriminator_loss, _ = self.forward_discriminator(self.discriminator, hidden_states, data_set_ids)
-            # print('dis loss on dis : ', discriminator_loss)
-            discriminator_loss.backward()
-            dis_optim.step()
+            for step in self.num_adv_steps:
+              discriminator_loss, _ = self.forward_discriminator(self.discriminator, hidden_states, data_set_ids, self.full_adv)
+              # print('dis loss on dis : ', discriminator_loss)
+              discriminator_loss.backward()
+              dis_optim.step()
           else:
             loss.backward()
             qa_optim.step()

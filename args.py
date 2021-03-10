@@ -26,6 +26,8 @@ def get_train_test_args():
     parser.add_argument('--visualize-predictions', action='store_true')
     parser.add_argument('--eval-every', type=int, default=5000)
     parser.add_argument('--adv', action='store_true')
+    parser.add_argument('--adv-steps',  type=int, default=2)
+    parser.add_argument('--full-adv', type=bool, default=True)
     parser.add_argument('--resume-training', action='store_true')
     args = parser.parse_args()
     return args
