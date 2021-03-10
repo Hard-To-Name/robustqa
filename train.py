@@ -166,6 +166,7 @@ class Trainer():
     all_start_logits = []
     all_end_logits = []
     all_dis_logits = []
+    all_ground_truth_data_set_ids = []
     with torch.no_grad(), \
       tqdm(total=len(data_loader.dataset)) as progress_bar:
       for batch in data_loader:
@@ -178,25 +179,27 @@ class Trainer():
         # Forward
         start_logits, end_logits = outputs.start_logits, outputs.end_logits
         hidden_states = outputs.hidden_states[-1]
-        _, dis_logits = self.forward_discriminator(hidden_states, data_set_ids)
+        _, dis_logits = self.forward_discriminator(discriminator, hidden_states, data_set_ids)
 
         # TODO: compute loss
 
         all_start_logits.append(start_logits)
         all_end_logits.append(end_logits)
         all_dis_logits.append(dis_logits)
+        all_ground_truth_data_set_ids.append(data_set_ids)
         progress_bar.update(batch_size)
 
     # Get F1 and EM scores
     start_logits = torch.cat(all_start_logits).cpu().numpy()
     end_logits = torch.cat(all_end_logits).cpu().numpy()
     dis_logits = torch.cat(all_dis_logits).cpu().numpy()
+    ground_truth_data_set_ids = torch.cat(all_ground_truth_data_set_ids).cpu().numpy()
     preds = util.postprocess_qa_predictions(data_dict,
                                             data_loader.dataset.encodings,
                                             (start_logits, end_logits))
 
     if split == 'validation':
-      discriminator_eval_results = util.eval_discriminator(data_dict, dis_logits)
+      discriminator_eval_results = util.eval_discriminator(data_dict, ground_truth_data_set_ids, dis_logits)
       results = util.eval_dicts(data_dict, preds)
       results_list = [('F1', results['F1']),
                       ('EM', results['EM']),
@@ -225,10 +228,10 @@ class Trainer():
     kl_criterion = nn.KLDivLoss(reduction="batchmean")
     return kl_criterion(log_prob, targets)
 
-  def forward_discriminator(self, hidden_states, data_set_ids):
+  def forward_discriminator(self, discriminator, hidden_states, data_set_ids):
     cls_embedding = hidden_states[:, 0]
     # detach the embedding making sure it's not updated from discriminator
-    log_prob = self.discriminator(cls_embedding.detach())
+    log_prob = discriminator(cls_embedding.detach())
     # print('forward discriminator : ', log_prob, data_set_ids)
     criterion = nn.NLLLoss()
     loss = criterion(log_prob, data_set_ids)
@@ -278,7 +281,7 @@ class Trainer():
             qa_optim.step()
             # print('dis loss on qa : ', discriminator_loss_for_qa)
 
-            discriminator_loss, _ = self.forward_discriminator(hidden_states, data_set_ids)
+            discriminator_loss, _ = self.forward_discriminator(self.discriminator, hidden_states, data_set_ids)
             # print('dis loss on dis : ', discriminator_loss)
             discriminator_loss.backward()
             dis_optim.step()

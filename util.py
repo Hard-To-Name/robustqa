@@ -319,21 +319,18 @@ def eval_dicts(gold_dict, pred_dict):
                  'F1': 100. * f1 / total}
     return eval_dict
 
-def eval_discriminator(gold_dict, dis_logits):
-    try:
-        predict_correct = 0
-        total = 0
-        curr_id = 0
-        for dis_logit in dis_logits:
-            total += 1
-            index = np.argmax(dis_logit)
-            ground_truth = gold_dict['data_set_id'][curr_id]
-            curr_id += 1
-            if index == ground_truth:
-                predict_correct += 1
-        eval_dict = {'precision': 100. * predict_correct / total}
-    except:
-        return {'precision': 0}
+def eval_discriminator(gold_dict, ground_truth_data_set_ids, dis_logits):
+    predict_correct = 0
+    total = 0
+    curr_id = 0
+    for dis_logit in dis_logits:
+        total += 1
+        index = np.argmax(dis_logit)
+        ground_truth = ground_truth_data_set_ids[curr_id]
+        curr_id += 1
+        if index == ground_truth:
+            predict_correct += 1
+    eval_dict = {'precision': 100. * predict_correct / total}
     return eval_dict
 
 
