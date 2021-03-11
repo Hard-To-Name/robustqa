@@ -290,15 +290,17 @@ class Trainer():
                           end_positions=end_positions,
                           )
           loss = outputs[0]
+          print("original loss:", loss)
           start_logits, end_logits = outputs[1], outputs[2]
           if self.enable_length_bp_penalty:
             pred_start_index = torch.argmax(start_logits, dim=1)
             pred_end_index = torch.argmax(end_logits, dim=1)
             pred_length = pred_end_index - pred_start_index
             gold_length = end_positions - start_positions
-            weights = torch.exp(1 - gold_length / pred_length)
-            weights.where(pred_length <= gold_length, 1)
-            print('weights : ', weights)
+            weight = torch.exp(1 - gold_length / pred_length)
+            filter = pred_length.cuda(device) <= gold_length.cuda(device)
+            weight.where(filter.byte().cuda(device), torch.Tensor(1).cuda(device))
+            print('weight : ', weight)
 
             if start_positions is not None and end_positions is not None:
               if len(start_positions.size()) > 1:
@@ -309,11 +311,12 @@ class Trainer():
               start_positions.clamp_(0, ignored_index)
               end_positions.clamp_(0, ignored_index)
 
-              loss_fct = nn.CrossEntropyLoss(weights=weights, ignore_index=ignored_index, reduction='sum')
+              loss_fct = nn.CrossEntropyLoss(reduce=False)
               start_loss = loss_fct(start_logits, start_positions)
               end_loss = loss_fct(end_logits, end_positions)
               loss = (start_loss + end_loss) / 2 / self.batch_size
-              print(loss)
+              loss *= weight
+              print("new loss:", loss)
 
           if self.enable_length_loss:
             softmax = nn.Softmax(dim=1)
@@ -428,7 +431,7 @@ def main():
     # discriminator.load_state_dict(torch.load(checkpoint_path + '/discriminator'))
     model.to(args.device)
     discriminator.to(args.device)
-    eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name, args.outdomain_data_repeat)
+    eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
     eval_loader = DataLoader(eval_dataset,
                              batch_size=args.batch_size,
                              sampler=SequentialSampler(eval_dataset))
