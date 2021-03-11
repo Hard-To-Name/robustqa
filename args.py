@@ -32,6 +32,7 @@ def get_train_test_args():
     parser.add_argument('--enable-length-loss', type=bool, default=False)
     parser.add_argument('--length-k', type=int, default=6)
     parser.add_argument('--length-lambda', type=float, default=1)
+    parser.add_argument('--enable-length-bp-penalty', type=bool, default=False)
     parser.add_argument('--resume-training', action='store_true')
     args = parser.parse_args()
     return args

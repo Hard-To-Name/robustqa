@@ -160,6 +160,7 @@ class Trainer():
     self.enable_length_loss = args.enable_length_loss
     self.length_k = args.length_k
     self.length_lambda = args.length_lambda
+    self.enable_length_bp_penalty = args.enable_length_bp_penalty
     self.length_mask = torch.ones(384, 384)
     for i in range(384):
       self.length_mask[i][i:i+self.length_k] = 0
@@ -289,13 +290,37 @@ class Trainer():
                           end_positions=end_positions,
                           )
           loss = outputs[0]
+          start_logits, end_logits = outputs[1], outputs[2]
+          if self.enable_length_bp_penalty:
+            pred_start_index = torch.argmax(start_logits, dim=1)
+            pred_end_index = torch.argmax(end_logits, dim=1)
+            pred_length = pred_end_index - pred_start_index
+            gold_length = end_positions - start_positions
+            weights = torch.exp(1 - gold_length / pred_length)
+            weights.where(pred_length <= gold_length, 1)
+            print('weights : ', weights)
+
+            if start_positions is not None and end_positions is not None:
+              if len(start_positions.size()) > 1:
+                start_positions = start_positions.squeeze(-1)
+              if len(end_positions.size()) > 1:
+                end_positions = end_positions.squeeze(-1)
+              ignored_index = start_logits.size(1)
+              start_positions.clamp_(0, ignored_index)
+              end_positions.clamp_(0, ignored_index)
+
+              loss_fct = nn.CrossEntropyLoss(weights=weights, ignore_index=ignored_index, reduction='sum')
+              start_loss = loss_fct(start_logits, start_positions)
+              end_loss = loss_fct(end_logits, end_positions)
+              loss = (start_loss + end_loss) / 2 / self.batch_size
+              print(loss)
+
           if self.enable_length_loss:
-            start_logits, end_logits = outputs[1], outputs[2]
             softmax = nn.Softmax(dim=1)
             start_logits_softmax = softmax(start_logits)
             end_logits_softmax = softmax(end_logits)
             start_logits_softmax = torch.unsqueeze(start_logits_softmax, 2) # (batch, query_len, 1)
-            end_logits_softmax = torch.unsqueeze(end_logits_softmax, 1) # # (batch, 1, query_len)
+            end_logits_softmax = torch.unsqueeze(end_logits_softmax, 1) # (batch, 1, query_len)
             length_loss = torch.sum(torch.matmul(torch.matmul(start_logits_softmax, end_logits_softmax), self.length_mask)) / self.batch_size
             loss += self.length_lambda * length_loss
 
