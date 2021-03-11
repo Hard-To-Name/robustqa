@@ -138,6 +138,7 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
 # TODO: use a logger, use tensorboard
 class Trainer():
   def __init__(self, args, log):
+    self.batch_size = args.batch_size
     self.lr = args.lr
     self.discriminator_lr = args.adv_lr
     self.num_epochs = args.num_epochs
@@ -156,6 +157,14 @@ class Trainer():
     self.discriminator_lambda = args.adv_lambda
     self.num_adv_steps = args.adv_steps
     self.full_adv = args.full_adv
+    self.enable_length_loss = args.enable_length_loss
+    self.length_k = args.length_k
+    self.length_lambda = args.length_lambda
+    self.length_mask = torch.ones(384, 384)
+    for i in range(384):
+      self.length_mask[i][i:i+self.length_k] = 0
+    print('length_mask : ', self.length_mask)
+
     if not os.path.exists(self.path):
       os.makedirs(self.path)
 
@@ -184,7 +193,7 @@ class Trainer():
         # Forward
         start_logits, end_logits = outputs.start_logits, outputs.end_logits
         hidden_states = outputs.hidden_states[-1]
-        _, dis_logits = self.forward_discriminator(discriminator, hidden_states, data_set_ids)
+        _, dis_logits = self.forward_discriminator(discriminator, hidden_states, data_set_ids, full_adv=self.full_adv)
 
         # TODO: compute loss
 
@@ -218,7 +227,7 @@ class Trainer():
       return preds, results
     return results
 
-  def compute_discriminator_loss(self, hidden_states):
+  def compute_discriminator_loss(self, hidden_states, full_adv):
     """
     Computes the loss for discriminator based on the hidden states of the DistillBERT model.
     Original paper implementation: https://github.com/seanie12/mrqa/blob/master/model.py
@@ -226,8 +235,11 @@ class Trainer():
     Input: last layer hidden states of the distillBERT model, with shape [batch_size, sequence_length, hidden_dim]
     :return: loss from discriminator.
     """
-    cls_embedding = hidden_states[:, 0]
-    log_prob = self.discriminator(cls_embedding)
+    if full_adv:
+      embedding = torch.flatten(hidden_states, start_dim=1)
+    else:
+      embedding = hidden_states[:, 0]
+    log_prob = self.discriminator(embedding)
     targets = torch.ones_like(log_prob) * (1 / self.discriminator.num_classes)
     # print('discriminator loss : ', log_prob, targets)
     kl_criterion = nn.KLDivLoss(reduction="batchmean")
@@ -235,7 +247,7 @@ class Trainer():
 
   def forward_discriminator(self, discriminator, hidden_states, data_set_ids, full_adv):
     if full_adv:
-      embedding = torch.flatten(hidden_states)
+      embedding = torch.flatten(hidden_states, start_dim=1)
     else:
       embedding = hidden_states[:, 0]
     # detach the embedding making sure it's not updated from discriminator
@@ -277,20 +289,30 @@ class Trainer():
                           end_positions=end_positions,
                           )
           loss = outputs[0]
+          if self.enable_length_loss:
+            start_logits, end_logits = outputs[1], outputs[2]
+            softmax = nn.Softmax(dim=1)
+            start_logits_softmax = softmax(start_logits)
+            end_logits_softmax = softmax(end_logits)
+            start_logits_softmax = torch.unsqueeze(start_logits_softmax, 2) # (batch, query_len, 1)
+            end_logits_softmax = torch.unsqueeze(end_logits_softmax, 1) # # (batch, 1, query_len)
+            length_loss = torch.sum(torch.matmul(torch.matmul(start_logits_softmax, end_logits_softmax), self.length_mask)) / self.batch_size
+            loss += self.length_lambda * length_loss
+
           if self.enable_discriminator:
             # hidden_states shape: [16, 384, 768]
             # [batch_size, sequence_length, hidden_size]
             hidden_states = outputs.hidden_states[-1]
-            discriminator_loss_for_qa = self.discriminator_lambda * self.compute_discriminator_loss(hidden_states)
+            discriminator_loss_for_qa = self.discriminator_lambda * self.compute_discriminator_loss(hidden_states, self.full_adv)
             loss += discriminator_loss_for_qa
 
             # step the qa_optim first
             loss.backward()
             qa_optim.step()
             # print('dis loss on qa : ', discriminator_loss_for_qa)
-            for step in self.num_adv_steps:
+            for step in range(self.num_adv_steps):
+              dis_optim.zero_grad()
               discriminator_loss, _ = self.forward_discriminator(self.discriminator, hidden_states, data_set_ids, self.full_adv)
-              # print('dis loss on dis : ', discriminator_loss)
               discriminator_loss.backward()
               dis_optim.step()
           else:
@@ -300,6 +322,7 @@ class Trainer():
           progress_bar.set_postfix(epoch=epoch_num, NLL=loss.item(), dis_loss=discriminator_loss.item())
           tbx.add_scalar('train/NLL', loss.item(), global_idx)
           tbx.add_scalar('train/dis_loss', discriminator_loss.item(), global_idx)
+          # if (global_idx % self.eval_every) == 0 and global_idx > 0:
           if (global_idx % self.eval_every) == 0 and global_idx > 0:
           # TODO(lizhe): change this back
           # if (global_idx % self.eval_every) == 0:
@@ -323,13 +346,13 @@ class Trainer():
           global_idx += 1
     return best_scores
 
-def get_dataset(args, datasets, data_dir, tokenizer, split_name):
+def get_dataset(args, datasets, data_dir, tokenizer, split_name, outdomain_data_repeat):
   datasets = datasets.split(',')
   dataset_dict = None
   dataset_name = ''
   for dataset in datasets:
     dataset_name += f'_{dataset}'
-    dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}')
+    dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', outdomain_data_repeat)
     dataset_dict = util.merge(dataset_dict, dataset_dict_curr)
   data_encodings = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
   return util.QADataset(data_encodings, train=(split_name == 'train')), dataset_dict
@@ -356,15 +379,15 @@ def main():
     log.info("Preparing Training Data...")
     args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     trainer = Trainer(args, log)
-    train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train')
+    train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train', args.outdomain_data_repeat)
     log.info("Preparing Validation Data...")
-    val_dataset, val_dict = get_dataset(args, args.train_datasets, args.val_dir, tokenizer, 'val')
+    val_dataset, val_dict = get_dataset(args, args.train_datasets, args.val_dir, tokenizer, 'val', args.outdomain_data_repeat)
     train_loader = DataLoader(train_dataset,
                               batch_size=args.batch_size,
                               sampler=RandomSampler(train_dataset))
     val_loader = DataLoader(val_dataset,
                             batch_size=args.batch_size,
-                            sampler=SequentialSampler(val_dataset))
+                            sampler=RandomSampler(val_dataset))
     best_scores = trainer.train(model, train_loader, val_loader, val_dict)
   if args.do_eval:
     args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -373,8 +396,11 @@ def main():
     trainer = Trainer(args, log)
     checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
     model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
-    discriminator = DomainDiscriminator()
-    discriminator.load_state_dict(torch.load(checkpoint_path + '/discriminator'))
+    discriminator_input_size = 768
+    if args.full_adv:
+      discriminator_input_size = 384 * 768
+    discriminator = DomainDiscriminator(input_size=discriminator_input_size)
+    # discriminator.load_state_dict(torch.load(checkpoint_path + '/discriminator'))
     model.to(args.device)
     discriminator.to(args.device)
     eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)

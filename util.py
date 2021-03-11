@@ -190,7 +190,7 @@ def build_dataset_to_idx_map():
         'relation_extraction': 5
     }
 
-def read_squad(path, include_dataset_labels = True):
+def read_squad(path, outdomain_data_repeat):
     data_name = path.split('/')[-1] # squad, nat_questions, news_qa
     data_set_id = build_dataset_to_idx_map()[data_name]
     path = Path(path)
@@ -198,28 +198,32 @@ def read_squad(path, include_dataset_labels = True):
         squad_dict = json.load(f)
     data_dict = {'question': [], 'context': [], 'id': [], 'answer': []}
 
-    for group in squad_dict['data']:
-        for passage in group['paragraphs']:
-            context = passage['context']
-            for qa in passage['qas']:
-                question = qa['question']
-                if len(qa['answers']) == 0:
-                    data_dict['question'].append(question)
-                    data_dict['context'].append(context)
-                    data_dict['id'].append(qa['id'])
-                else:
-                    for answer in qa['answers']:
+    repeat_times = 1
+    # Repeat outdomain dataset
+    if data_set_id >= 3:
+        repeat_times = outdomain_data_repeat
+    for _ in range(repeat_times):
+        for group in squad_dict['data']:
+            for passage in group['paragraphs']:
+                context = passage['context']
+                for qa in passage['qas']:
+                    question = qa['question']
+                    if len(qa['answers']) == 0:
                         data_dict['question'].append(question)
                         data_dict['context'].append(context)
                         data_dict['id'].append(qa['id'])
-                        data_dict['answer'].append(answer)
+                    else:
+                        for answer in qa['answers']:
+                            data_dict['question'].append(question)
+                            data_dict['context'].append(context)
+                            data_dict['id'].append(qa['id'])
+                            data_dict['answer'].append(answer)
     id_map = ddict(list)
     for idx, qid in enumerate(data_dict['id']):
         id_map[qid].append(idx)
 
     data_dict_collapsed = {'question': [], 'context': [], 'id': []}
-    if include_dataset_labels:
-        data_dict_collapsed['data_set_id'] = []
+    data_dict_collapsed['data_set_id'] = []
     if data_dict['answer']:
         data_dict_collapsed['answer'] = []
     for qid in id_map:
@@ -227,8 +231,7 @@ def read_squad(path, include_dataset_labels = True):
         data_dict_collapsed['question'].append(data_dict['question'][ex_ids[0]])
         data_dict_collapsed['context'].append(data_dict['context'][ex_ids[0]])
         data_dict_collapsed['id'].append(qid)
-        if include_dataset_labels:
-            data_dict_collapsed['data_set_id'].append(data_set_id)
+        data_dict_collapsed['data_set_id'].append(data_set_id)
 
         if data_dict['answer']:
             all_answers = [data_dict['answer'][idx] for idx in ex_ids]
