@@ -428,7 +428,7 @@ def main():
     # discriminator.load_state_dict(torch.load(checkpoint_path + '/discriminator'))
     model.to(args.device)
     discriminator.to(args.device)
-    eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
+    eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name, args.outdomain_data_repeat)
     eval_loader = DataLoader(eval_dataset,
                              batch_size=args.batch_size,
                              sampler=SequentialSampler(eval_dataset))
